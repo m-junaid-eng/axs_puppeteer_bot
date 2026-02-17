@@ -1,0 +1,13 @@
+{
+  "name": "pupp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "open:axs": "node scripts/open-axs.mjs"
+  },
+  "dependencies": {
+    "puppeteer": "^23.0.0",
+    "xlsx": "^0.18.5"
+  }
+}

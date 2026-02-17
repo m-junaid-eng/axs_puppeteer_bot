@@ -1,0 +1,18 @@
+{
+  "name": "pupp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "open:axs": "node scripts/open-axs.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.95.1",
+    "proxy-chain": "^2.7.1",
+    "puppeteer": "^23.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "puppeteer-real-browser": "^1.4.4",
+    "xlsx": "^0.18.5"
+  }
+}

@@ -1,0 +1,56 @@
+# Puppeteer AXS opener (compliant)
+
+This project opens an AXS URL using Puppeteer, saves HTML/screenshots, and can follow event links to collect event detail pages.
+
+It does **not** bypass Cloudflare/Turnstile. In `--interactive` mode it pauses so you can solve challenges manually.
+
+## Install
+
+```bash
+npm install
+```
+
+## Run
+
+```bash
+npm run open:axs
+```
+
+## All-events crawl
+
+```bash
+npm run open:axs -- --all-events --max-events 5 --delay-ms 2000
+```
+
+## Interactive (manual solve)
+
+```bash
+npm run open:axs -- --all-events --interactive --use-system-chrome --max-events 5
+```
+
+Optional pacing (to reduce repeated prompts):
+
+```bash
+# Step-by-step navigation (auto continues after 30s)
+npm run open:axs -- --all-events --interactive --step
+
+# Extra wait after you solve the challenge
+npm run open:axs -- --all-events --interactive --post-solve-wait-ms 12000
+```
+
+## Recommended settings to reduce repeat challenges (still no bypass)
+
+- Use a persistent profile (default in `--interactive`): `.state/profiles/interactive`
+- Use installed Chrome: `--use-system-chrome`
+- Avoid `--fresh-profile` (looks like a brand-new browser every run)
+- Avoid UA rotation during manual solving
+- Slow down between event pages (`--delay-ms`)
+
+## Output
+
+Artifacts are written under `artifacts/`:
+
+- `artifacts/axs.html`, `artifacts/axs.png`
+- `artifacts/all-events.html`
+- `artifacts/events/*.html` and `artifacts/events/*.png`
+- `artifacts/events.json` and `artifacts/events.xlsx` (when `--all-events`)
