@@ -1077,6 +1077,9 @@ await page.emulateTimezone('Europe/London');
       const toVisit = links.slice(0, Number.isFinite(maxEvents) ? maxEvents : 10);
       console.log(`Found ${links.length} event links; visiting ${toVisit.length}.`);
 
+      const eventsDir = path.join(artifactsDir, 'events');
+      await fs.mkdir(eventsDir, { recursive: true });
+
       const eventPage = await browser.newPage();
 
       // --- INITIALIZE STORAGE FOR PRICE DATA ---
@@ -1191,12 +1194,26 @@ await page.emulateTimezone('Europe/London');
               }
 
               if (interactive) {
-                await promptEnter('Prices loaded. Press Enter to continue... ', { skipIfNoTty: true });
+                await promptEnter('Prices loaded. Press Enter to save tickets HTML and continue... ', {
+                  skipIfNoTty: true
+                });
               }
+
+              const ticketsHtmlPath = path.join(
+                eventsDir,
+                `${eventId}-${safeFilename(details.name)}-tickets.html`
+              );
+              await saveHtml({ page: ticketsPage, filePath: ticketsHtmlPath });
 
               // --- ASSIGN DATA NOW ---
               details.prices = currentEventPrices.length > 0 ? JSON.stringify(currentEventPrices) : 'N/A';
-              console.log('Captured price data.');
+
+              const ticketsShotPath = path.join(
+                eventsDir,
+                `${eventId}-${safeFilename(details.name)}-tickets.png`
+              );
+              await ticketsPage.screenshot({ path: ticketsShotPath, fullPage: true });
+              console.log(`Saved Price Data and HTML: ${ticketsHtmlPath}`);
             } finally {
               if (ticketsPage && closeTicketsPage) {
                 await ticketsPage.close();
@@ -1207,7 +1224,13 @@ await page.emulateTimezone('Europe/London');
           }
 
           scraped.push(details);
-          // (Removed) Saving per-event HTML and screenshots.
+
+          const base = `${eventId}-${safeFilename(details.name || label)}`;
+          const htmlPath = path.join(eventsDir, `${base}.html`);
+          await saveHtml({ page: eventPage, filePath: htmlPath });
+          const shotPath = path.join(eventsDir, `${base}.png`);
+          await eventPage.screenshot({ path: shotPath, fullPage: true });
+          console.log(`Saved Event Details: ${htmlPath}`);
 
           if (Number.isFinite(delayMs) && delayMs > 0) {
             if (interactive && !delayMsProvided) {

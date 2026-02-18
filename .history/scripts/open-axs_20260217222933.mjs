@@ -32,22 +32,10 @@ function safeFilename(value) {
   return s.length ? s : 'page';
 }
 
-async function safeRm(targetPath) {
-  try {
-    await fs.rm(targetPath, { recursive: true, force: true });
-  } catch {
-    // ignore
-  }
-}
-
-async function cleanupArtifacts(artifactsDir) {
-  // Keep data outputs (events.json, events.xlsx). Only remove debug artifacts.
-  await safeRm(path.join(artifactsDir, 'events'));
-  await safeRm(path.join(artifactsDir, 'fingerprints'));
-  await safeRm(path.join(artifactsDir, 'axs.html'));
-  await safeRm(path.join(artifactsDir, 'all-events.html'));
-  await safeRm(path.join(artifactsDir, 'axs.png'));
-  await safeRm(path.join(artifactsDir, 'fingerprint.json'));
+async function saveHtml({ page, filePath }) {
+  const html = await page.content();
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, html, 'utf8');
 }
 
 async function promptEnter(message, { timeoutMs = 0, skipIfNoTty = false } = {}) {
@@ -865,7 +853,7 @@ async function main() {
     .from('axs_links')
     .select('*')
     .order('created_at', { ascending: false })
-    .limit(5); // Change limit as needed
+    .limit(10); // Change limit as needed
 
   if (error || !supabaseRows) {
     console.error('Supabase error:', error);
@@ -888,8 +876,8 @@ async function main() {
   const useSystemChrome = hasFlag('--use-system-chrome');
   const chromePath = getArgValue('--chrome-path');
 
-  const dumpFingerprint = false;
-  const saveMainHtml = false;
+  const dumpFingerprint = !hasFlag('--no-fingerprint');
+  const saveMainHtml = !hasFlag('--no-save-html');
   const followAllEvents = hasFlag('--all-events');
   const exportXlsx = followAllEvents && !hasFlag('--no-xlsx');
 
@@ -909,9 +897,6 @@ async function main() {
   const artifactsDir = path.join(projectRoot, 'artifacts');
   const statePath = path.join(projectRoot, '.state', 'used_uas.json');
   const profilesDir = path.join(projectRoot, '.state', 'profiles');
-
-  // User request: do not save HTML/screenshots/fingerprints; also delete old debug folders/files.
-  await cleanupArtifacts(artifactsDir);
 
   // UA strategy: in interactive mode, do not override UA unless explicitly requested.
   let userAgent = explicitUa;
@@ -1018,7 +1003,54 @@ await page.emulateTimezone('Europe/London');
     await sleep(3000);
     await waitForManualCaptchaSolve(page, { interactive });
 
-    // (Removed) Saving HTML, fingerprint logs, and screenshots.
+    if (saveMainHtml) {
+      const mainHtmlPath = path.join(artifactsDir, 'axs.html');
+      await saveHtml({ page, filePath: mainHtmlPath });
+      console.log(`Saved HTML: ${mainHtmlPath}`);
+    }
+
+    if (dumpFingerprint) {
+      const fingerprint = await getFingerprintSignals(page);
+      const runMeta = {
+        url,
+        headless,
+        freshProfile,
+        userDataDir: userDataDir ?? null,
+        userAgentConfigured: userAgent
+      };
+      const payload = { meta: runMeta, fingerprint };
+
+      await fs.mkdir(artifactsDir, { recursive: true });
+      const fpLatestPath = path.join(artifactsDir, 'fingerprint.json');
+      await fs.writeFile(fpLatestPath, JSON.stringify(payload, null, 2), 'utf8');
+
+      const historyDir = path.join(artifactsDir, 'fingerprints');
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const fpHistoryPath = path.join(historyDir, `${stamp}.json`);
+      await writeJson(fpHistoryPath, payload);
+
+      const tsvPath = path.join(historyDir, 'fingerprints.tsv');
+      const tsvLine = [
+        payload.fingerprint.collectedAt,
+        payload.meta.userAgentConfigured,
+        payload.fingerprint.timezone?.timeZone ?? '',
+        payload.fingerprint.webgl?.vendor ?? '',
+        payload.fingerprint.webgl?.renderer ?? '',
+        payload.fingerprint.canvas?.djb2 ?? ''
+      ]
+        .map((v) => String(v).replace(/\t/g, ' '))
+        .join('\t');
+      await appendText(tsvPath, `${tsvLine}\n`);
+
+      console.log(`Saved fingerprint signals: ${fpLatestPath}`);
+      console.log(`Saved fingerprint history: ${fpHistoryPath}`);
+      console.log(`Appended fingerprint log: ${tsvPath}`);
+    }
+
+    await fs.mkdir(artifactsDir, { recursive: true });
+    const screenshotPath = path.join(artifactsDir, 'axs.png');
+    await page.screenshot({ path: screenshotPath, fullPage: true });
+    console.log(`Saved screenshot: ${screenshotPath}`);
 
     if (followAllEvents) {
       const scraped = [];
@@ -1055,7 +1087,11 @@ await page.emulateTimezone('Europe/London');
       // If we got challenged on the listing page, pause here before saving/collecting.
       await waitForManualCaptchaSolve(page, { interactive });
 
-      // (Removed) Saving listing HTML.
+      const listingHtmlPath = path.join(artifactsDir, 'all-events.html');
+      if (saveMainHtml) {
+        await saveHtml({ page, filePath: listingHtmlPath });
+        console.log(`Saved HTML: ${listingHtmlPath}`);
+      }
 // Use Supabase data instead of scanning the page
       let links = supabaseRows.map(row => ({
         href: row.url,
@@ -1076,6 +1112,9 @@ await page.emulateTimezone('Europe/London');
 
       const toVisit = links.slice(0, Number.isFinite(maxEvents) ? maxEvents : 10);
       console.log(`Found ${links.length} event links; visiting ${toVisit.length}.`);
+
+      const eventsDir = path.join(artifactsDir, 'events');
+      await fs.mkdir(eventsDir, { recursive: true });
 
       const eventPage = await browser.newPage();
 
@@ -1191,12 +1230,26 @@ await page.emulateTimezone('Europe/London');
               }
 
               if (interactive) {
-                await promptEnter('Prices loaded. Press Enter to continue... ', { skipIfNoTty: true });
+                await promptEnter('Prices loaded. Press Enter to save tickets HTML and continue... ', {
+                  skipIfNoTty: true
+                });
               }
+
+              const ticketsHtmlPath = path.join(
+                eventsDir,
+                `${eventId}-${safeFilename(details.name)}-tickets.html`
+              );
+              await saveHtml({ page: ticketsPage, filePath: ticketsHtmlPath });
 
               // --- ASSIGN DATA NOW ---
               details.prices = currentEventPrices.length > 0 ? JSON.stringify(currentEventPrices) : 'N/A';
-              console.log('Captured price data.');
+
+              const ticketsShotPath = path.join(
+                eventsDir,
+                `${eventId}-${safeFilename(details.name)}-tickets.png`
+              );
+              await ticketsPage.screenshot({ path: ticketsShotPath, fullPage: true });
+              console.log(`Saved Price Data and HTML: ${ticketsHtmlPath}`);
             } finally {
               if (ticketsPage && closeTicketsPage) {
                 await ticketsPage.close();
@@ -1207,7 +1260,13 @@ await page.emulateTimezone('Europe/London');
           }
 
           scraped.push(details);
-          // (Removed) Saving per-event HTML and screenshots.
+
+          const base = `${eventId}-${safeFilename(details.name || label)}`;
+          const htmlPath = path.join(eventsDir, `${base}.html`);
+          await saveHtml({ page: eventPage, filePath: htmlPath });
+          const shotPath = path.join(eventsDir, `${base}.png`);
+          await eventPage.screenshot({ path: shotPath, fullPage: true });
+          console.log(`Saved Event Details: ${htmlPath}`);
 
           if (Number.isFinite(delayMs) && delayMs > 0) {
             if (interactive && !delayMsProvided) {

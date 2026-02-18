@@ -1207,7 +1207,13 @@ await page.emulateTimezone('Europe/London');
           }
 
           scraped.push(details);
-          // (Removed) Saving per-event HTML and screenshots.
+
+          const base = `${eventId}-${safeFilename(details.name || label)}`;
+          const htmlPath = path.join(eventsDir, `${base}.html`);
+          await saveHtml({ page: eventPage, filePath: htmlPath });
+          const shotPath = path.join(eventsDir, `${base}.png`);
+          await eventPage.screenshot({ path: shotPath, fullPage: true });
+          console.log(`Saved Event Details: ${htmlPath}`);
 
           if (Number.isFinite(delayMs) && delayMs > 0) {
             if (interactive && !delayMsProvided) {
