@@ -136,12 +136,10 @@ async function safeRm(targetPath) {
   try {
     await fs.rm(targetPath, { recursive: true, force: true });
   } catch {
-    // ignore
   }
 }
 
 async function cleanupArtifacts(artifactsDir) {
-  // Keep data outputs (events.json, events.xlsx). Only remove debug artifacts.
   await safeRm(path.join(artifactsDir, 'events'));
   await safeRm(path.join(artifactsDir, 'fingerprints'));
   await safeRm(path.join(artifactsDir, 'axs.html'));
@@ -219,7 +217,6 @@ async function isLikelyCaptchaPage(page) {
         return true;
       }
 
-      // Cloudflare Turnstile / challenge markers.
       if (
         document.querySelector('input[name="cf-turnstile-response"]') ||
         document.querySelector('[id^="cf-chl-"]') ||
@@ -229,8 +226,6 @@ async function isLikelyCaptchaPage(page) {
         return true;
       }
 
-      // Some challenge pages define this global.
-      // eslint-disable-next-line no-undef
       if (typeof window !== 'undefined' && (window._cf_chl_opt || window.__CF$cv$params)) return true;
 
       const iframes = Array.from(document.querySelectorAll('iframe'));
@@ -251,14 +246,10 @@ async function waitForManualCaptchaSolve(page, { interactive }) {
   console.log('--- Solving Loop Detected ---');
   console.log('Action: Click the box. Once the green check appears, DO NOT TOUCH ANYTHING.');
 
-  // 1. Wait for the iframe to clear
   await page.waitForFunction(() => {
     return !document.querySelector('iframe[src*="challenges.cloudflare.com"]');
   }, { timeout: 0 });
 
-  // 2. The "Human Pause" (Crucial)
-  // We wait 5 seconds. During this time, we simulate a slight mouse wiggle
-  // to tell AXS "I am a real person waiting for the page to load."
   console.log('Checkmark detected. Simulating human rest period...');
 
   for (let i = 0; i < 5; i++) {
@@ -266,7 +257,6 @@ async function waitForManualCaptchaSolve(page, { interactive }) {
     await sleep(1000);
   }
 
-  // 3. Small scroll to trigger the "onScroll" event sensors
   await page.evaluate(() => window.scrollBy(0, 100));
   await sleep(500);
   await page.evaluate(() => window.scrollBy(0, -100));
@@ -274,11 +264,8 @@ async function waitForManualCaptchaSolve(page, { interactive }) {
   console.log('Stabilization complete. Proceeding...');
 }
 async function waitForManualChallengeClear(page, { interactive, timeoutMs = 10 * 60_000 } = {}) {
-  // Generic challenge wait that does NOT assume we're heading to an event page.
-  // Useful for tickets/pricing pages where JSON-LD event markers won't exist.
   if (!interactive) return;
 
-  // Some challenges appear a moment AFTER DOMContentLoaded.
   let challengeDetected = false;
   for (let i = 0; i < 60; i++) {
     if (await isLikelyCaptchaPage(page)) {
@@ -295,7 +282,6 @@ async function waitForManualChallengeClear(page, { interactive, timeoutMs = 10 *
   try {
     await page.bringToFront();
   } catch {
-    // ignore
   }
 
   const started = Date.now();
@@ -314,7 +300,6 @@ async function waitForManualChallengeClear(page, { interactive, timeoutMs = 10 *
       continue;
     }
 
-    // Require it to stay cleared briefly (handles redirect back to challenge).
     clearedStreak++;
     if (clearedStreak >= 6) return;
     await sleep(500);
@@ -335,13 +320,11 @@ async function waitForEventPageAfterSolve(page, { timeoutMs }) {
     }
 
     clearedStreak++;
-    // Require it to stay cleared for a short period (handles redirect back to challenge).
     if (clearedStreak < 6) {
       await sleep(500);
       continue;
     }
 
-    // Now wait for likely event markers.
     const ok = await waitForLikelyEventPage(page, { timeoutMs: 20_000 });
     if (ok) return true;
     await sleep(500);
@@ -463,7 +446,6 @@ async function findGetTicketsHref(page) {
 }
 
 async function dismissCommonOverlays(page) {
-  // Best-effort cookie/banner dismissal to unblock clicks.
   try {
     await page.evaluate(() => {
       const needles = ['accept', 'accept all', 'agree', 'i agree', 'got it', 'ok', 'continue'];
@@ -493,19 +475,14 @@ async function dismissCommonOverlays(page) {
           el.click();
           break;
         } catch {
-          // ignore
         }
       }
     });
   } catch {
-    // ignore
   }
 }
 
 async function clickGetTicketsCta(page) {
-  // Click the visible "Get Tickets" CTA on the event detail page.
-  // Supports <a>, <button>, and role=button.
-  // Returns { clicked, found }.
   const xpaths = [
     "//a[contains(translate(normalize-space(string(.)), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'get tickets') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'get tickets')]",
     "//button[contains(translate(normalize-space(string(.)), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'get tickets') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'get tickets')]",
@@ -522,11 +499,9 @@ async function clickGetTicketsCta(page) {
             try {
               node.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
             } catch {
-              // ignore
             }
           });
         } catch {
-          // ignore
         }
 
         let box = null;
@@ -549,7 +524,6 @@ async function clickGetTicketsCta(page) {
             await el.click({ delay: 120 });
             return { found: true, clicked: true };
           } catch {
-            // keep trying
           }
         }
       }
@@ -563,14 +537,11 @@ async function clickGetTicketsCta(page) {
 async function clickGetTicketsAndWait({ page, browser, timeoutMs = 30_000 } = {}) {
   const startedUrl = page.url();
 
-  // 1. Move the mouse to the button first (simulates hover)
   const clickRes = await clickGetTicketsCta(page);
   if (!clickRes?.clicked) return { page, openedNewTab: false, navigated: false };
 
-  // 2. Wait for a moment after clicking to let the challenge initialize
   await sleep(2000);
 
-  // 3. Check for new targets (popups) or URL changes
   const pages = await browser.pages();
   const newPage = pages.find(p => p !== page && !p.url().includes('about:blank'));
 
@@ -633,7 +604,6 @@ async function collectSeeEventLinksInAllEventsSection(page) {
 }
 
 async function collectEventDetailLinksByPattern(page) {
-  // Fallback when "See Event" text isn’t present.
   return await page.$$eval('a[href]', (as) => {
     const out = [];
     const re = /\/events\/(\d+)/;
@@ -776,7 +746,6 @@ async function waitForAllEventsHeading(page, { timeoutMs }) {
       try {
         await page.evaluate(() => window.scrollBy(0, Math.max(600, window.innerHeight * 0.85)));
       } catch {
-        // ignore
       }
       scrolls++;
     }
@@ -966,7 +935,6 @@ async function fetchAllSupabaseRows({ supabase, table, pageSize = 1000 }) {
 }
 
 async function main() {
-  // --- ADD THIS BLOCK ---
   const supabase = createClient(
     "https://lnkaympiinecpfumfvei.supabase.co/",
     "sb_publishable_StFc8yTai0HtpNV8eVCgHQ_6dmbsNfJ"
@@ -982,7 +950,6 @@ async function main() {
   }
 
   console.log(`Fetched ${supabaseRows.length} rows from Supabase.`);
-  // --- END OF SUPABASE BLOCK ---
 
   const url = getArgValue('--url') ?? DEFAULT_URL;
   const interactive = hasFlag('--interactive');
@@ -1020,7 +987,6 @@ async function main() {
   const statePath = path.join(projectRoot, '.state', 'used_uas.json');
   const profilesDir = path.join(projectRoot, '.state', 'profiles');
 
-  // User request: do not save HTML/screenshots/fingerprints; also delete old debug folders/files.
   await cleanupArtifacts(artifactsDir);
 
   if (followAllEvents) {
@@ -1066,8 +1032,6 @@ async function main() {
     );
   }
 
-
-// --- CONFIGURATION: PICK YOUR PROXY ---
 const PROXY_STRINGS = [
   '213.137.80.10:12323:14a50579dbf06:d7e12a129f',
   '91.236.217.28:12323:14a50579dbf06:d7e12a129f',
@@ -1104,30 +1068,25 @@ const { browser, page } = await connect({
     connectOption: { defaultViewport: null }
 });
 
-// Authenticate the chosen proxy
 await page.authenticate({
     username: activeProxy.user,
     password: activeProxy.pass
 });
 
 await page.evaluateOnNewDocument(() => {
-    // 1. Hide WebRTC (Prevents real IP leak)
     Object.defineProperty(navigator, 'webdriver', { get: () => false });
     const rtc = window.RTCPeerConnection || window.webkitRTCPeerConnection;
     if (rtc) {
         window.RTCPeerConnection = function() { return {}; };
         window.webkitRTCPeerConnection = function() { return {}; };
     }
-    // 2. Hide Pakistani Language signals
     Object.defineProperty(navigator, 'languages', { get: () => ['en-GB', 'en-US', 'en'] });
     Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
 });
 
-// 3. Force the UK Identity
 await page.emulateTimezone('Europe/London');
   try {
 
-    // Realistic headers
     await page.setExtraHTTPHeaders({
       'accept-language': 'en-US,en;q=0.9'
     });
@@ -1148,8 +1107,6 @@ await page.emulateTimezone('Europe/London');
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await sleep(3000);
     await waitForManualCaptchaSolve(page, { interactive });
-
-    // (Removed) Saving HTML, fingerprint logs, and screenshots.
 
     if (followAllEvents) {
       const scraped = [];
@@ -1183,11 +1140,8 @@ await page.emulateTimezone('Europe/London');
         }
       }
 
-      // If we got challenged on the listing page, pause here before saving/collecting.
       await waitForManualCaptchaSolve(page, { interactive });
 
-      // (Removed) Saving listing HTML.
-// Use Supabase data instead of scanning the page
       let links = supabaseRows.map((row) => ({
         href: row.url,
         label: row.name,
@@ -1211,7 +1165,6 @@ await page.emulateTimezone('Europe/London');
 
       const eventPage = await browser.newPage();
 
-      // --- INITIALIZE STORAGE FOR PRICE DATA ---
       let interceptedPrices = [];
 
       try {
@@ -1227,8 +1180,6 @@ await page.emulateTimezone('Europe/London');
 
           console.log(`Event ${i + 1}/${toVisit.length}: ${href}`);
 
-          // (Removed) Do not reset a shared array here; use a scoped per-event variable instead.
-
           if (interactive && stepMode) {
             await promptEnter('Press Enter to open the next event link (auto-continue in 30s)... ', {
               timeoutMs: 30_000,
@@ -1236,7 +1187,6 @@ await page.emulateTimezone('Europe/London');
             });
           }
 
-          // Use a referer to match normal click navigation behavior.
           await eventPage.goto(href, {
             waitUntil: 'networkidle2', // Wait for background API calls to stabilize
             timeout: 60_000,
@@ -1248,14 +1198,12 @@ await page.emulateTimezone('Europe/London');
 
           const details = await extractEventDetails(eventPage, { fallbackUrl: href, eventId });
 
-          // Also capture the "Get Tickets" page HTML (the ticket card button).
           const ticketsHref = await findGetTicketsHref(eventPage);
           if (ticketsHref) {
             let ticketsPage = null;
             let closeTicketsPage = false;
             let finalTicketsUrl = ticketsHref;
             try {
-              // Prefer a real click
               const clickOutcome = await clickGetTicketsAndWait({
                 page: eventPage,
                 browser,
@@ -1266,7 +1214,6 @@ await page.emulateTimezone('Europe/London');
                 ticketsPage = clickOutcome.page;
                 closeTicketsPage = Boolean(clickOutcome.openedNewTab);
               } else {
-                // Fallback: open the link directly in a new tab.
                 ticketsPage = await browser.newPage();
                 closeTicketsPage = true;
                 if (userAgent && !noUaOverride) {
@@ -1275,7 +1222,6 @@ await page.emulateTimezone('Europe/London');
                 await ticketsPage.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1 });
               }
 
-              // --- SCOPED VARIABLE ---
               let currentEventPrices = [];
 
               ticketsPage.on('response', async (response) => {
@@ -1283,7 +1229,6 @@ await page.emulateTimezone('Europe/London');
                 if (url.includes('/price') && url.includes('pick_a_seat_2d')) {
                   try {
                     const data = await response.json();
-                    // STORE DATA LOCALLY
                     currentEventPrices = data.offerPrices.flatMap((offer) => {
                       return offer.zonePrices.flatMap((zone) => {
                         return zone.priceLevels.map((pl) => ({
@@ -1309,14 +1254,10 @@ await page.emulateTimezone('Europe/London');
               await sleep(1500);
               await waitForManualChallengeClear(ticketsPage, { interactive });
 
-              // --- RE-TRIGGER RELOAD TO CATCH DATA AFTER SOLVING CAPTCHA ---
-              // AXS triggers the price API when the map mounts; we force a remount here.
               console.log('Refreshing Seat Map to capture prices...');
               await ticketsPage.reload({ waitUntil: 'networkidle2' });
               await sleep(4000);
 
-              // --- CRITICAL FIX: THE WAIT ---
-              // Script will pause here until data is found or 10 seconds pass
               let waitLimit = 0;
               while (currentEventPrices.length === 0 && waitLimit < 20) {
                 await sleep(500);
@@ -1329,7 +1270,6 @@ await page.emulateTimezone('Europe/London');
                 await sleep(waitMs);
               }
 
-              // --- ASSIGN DATA NOW ---
               details.prices = currentEventPrices.length > 0 ? JSON.stringify(currentEventPrices) : 'N/A';
               console.log('Captured price data.');
 
@@ -1395,7 +1335,6 @@ await page.emulateTimezone('Europe/London');
           }
 
           scraped.push(details);
-          // (Removed) Saving per-event HTML and screenshots.
 
           if (Number.isFinite(delayMs) && delayMs > 0) {
             if (interactive && !delayMsProvided) {
