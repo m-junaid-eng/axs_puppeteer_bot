@@ -3,10 +3,12 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { fileURLToPath } from 'node:url';
+
+import 'dotenv/config';
+
 import { connect } from 'puppeteer-real-browser';
 import { createClient } from '@supabase/supabase-js';
-
-import * as XLSX from 'xlsx';
+import { REST, Routes } from 'discord.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,6 +18,104 @@ const DEFAULT_URL = 'https://www.axs.com/teams/113914/wwe-tickets';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatEventDate(value) {
+  const raw = normalizeText(value);
+  if (!raw) return '';
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(d);
+  } catch {
+    return raw;
+  }
+}
+
+function currencyToSymbol(code) {
+  const c = String(code || '').toUpperCase();
+  if (c === 'EUR') return '€';
+  if (c === 'GBP') return '£';
+  if (c === 'USD') return '$';
+  return c ? `${c} ` : '';
+}
+
+function formatPricesForDiscord(prices, { maxLines = 20 } = {}) {
+  if (!Array.isArray(prices) || prices.length === 0) return 'N/A';
+
+  const seen = new Set();
+  const unique = [];
+  for (const p of prices) {
+    const offerName = normalizeText(p?.offerName || '');
+    const label = normalizeText(p?.label || '');
+    const price = normalizeText(p?.price || '');
+    const currency = normalizeText(p?.currency || '');
+    if (!offerName && !label && !price) continue;
+    const key = `${offerName}|${label}|${price}|${currency}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push({ offerName, label, price, currency });
+  }
+
+  const lines = [];
+  for (const item of unique.slice(0, maxLines)) {
+    const sym = currencyToSymbol(item.currency);
+    const amount = item.price ? `${sym}${item.price}` : sym.trim() || 'Price';
+    const name = item.offerName || 'Ticket';
+    const section = item.label || 'Section';
+    lines.push(`${amount} - ${name}\n• ${section}`);
+  }
+  if (unique.length > maxLines) {
+    lines.push(`...and ${unique.length - maxLines} more`);
+  }
+  return lines.join('\n\n');
+}
+
+async function sendDiscordMessage({ rest, channelId, content }) {
+  if (!rest) throw new Error('Discord REST client not initialized (missing token).');
+  const cid = String(channelId || '').trim();
+  if (!cid) throw new Error('Missing Discord channelId.');
+  const res = await rest.post(Routes.channelMessages(cid), {
+    body: {
+      content,
+      allowed_mentions: { parse: [] }
+    }
+  });
+  return res;
+}
+
+async function notifyDiscordForEvent({ rest, channelId, artistName, details, ticketUrl, prices }) {
+  const title = normalizeText(artistName || details?.name || '') || 'Tickets are now available!';
+  const venue = normalizeText(details?.venue || '');
+  const city = normalizeText(details?.city || '');
+  const location = [venue, city].filter(Boolean).join(', ');
+  const dateText = formatEventDate(details?.startDate || '');
+  const pricesText = formatPricesForDiscord(prices);
+  const link = String(ticketUrl || details?.url || '').trim();
+
+  const content = [
+    `🎉 **Tickets for ${title} are now available!**`,
+    location ? `📍 **Location:** ${location}` : null,
+    dateText ? `📅 **Date:** ${dateText}` : null,
+    '',
+    '🎯 **Available sections with prices:**',
+    pricesText,
+    '',
+    '🔗 **Get your tickets here:**',
+    link || 'N/A'
+  ]
+    .filter((x) => x !== null)
+    .join('\n');
+
+  const msg = await sendDiscordMessage({ rest, channelId, content });
+  return msg;
 }
 
 function slugify(value) {
@@ -334,14 +434,6 @@ async function extractEventDetails(page, { fallbackUrl, eventId }) {
   }
 
   return result;
-}
-
-async function writeXlsx({ rows, filePath }) {
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.json_to_sheet(rows);
-  XLSX.utils.book_append_sheet(wb, ws, 'events');
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  XLSX.writeFile(wb, filePath);
 }
 
 async function findFirstLinkByText(page, needle) {
@@ -865,7 +957,7 @@ async function main() {
     .from('axs_links')
     .select('*')
     .order('created_at', { ascending: false })
-    .limit(5); // Change limit as needed
+    .limit(1); // Change limit as needed
 
   if (error || !supabaseRows) {
     console.error('Supabase error:', error);
@@ -891,9 +983,8 @@ async function main() {
   const dumpFingerprint = false;
   const saveMainHtml = false;
   const followAllEvents = hasFlag('--all-events');
-  const exportXlsx = followAllEvents && !hasFlag('--no-xlsx');
-
-  const xlsxPath = getArgValue('--xlsx-path') ?? path.join(projectRoot, 'artifacts', 'events.xlsx');
+  const discordToken = process.env.DISCORD_TOKEN;
+  const discordRest = discordToken ? new REST({ version: '10' }).setToken(discordToken) : null;
   const maxEventsRaw = getArgValue('--max-events');
   const maxEvents = maxEventsRaw ? Number(maxEventsRaw) : 10;
   const delayMsRaw = getArgValue('--delay-ms');
@@ -912,6 +1003,15 @@ async function main() {
 
   // User request: do not save HTML/screenshots/fingerprints; also delete old debug folders/files.
   await cleanupArtifacts(artifactsDir);
+
+  if (followAllEvents) {
+    const hasAnyChannel = Array.isArray(supabaseRows)
+      ? supabaseRows.some((r) => (r?.discordChannelId || r?.discord_channel_id || r?.category_channel_id))
+      : false;
+    if (hasAnyChannel && !discordRest) {
+      throw new Error('Missing Discord token. Set DISCORD_TOKEN in .env (or in your environment).');
+    }
+  }
 
   // UA strategy: in interactive mode, do not override UA unless explicitly requested.
   let userAgent = explicitUa;
@@ -969,7 +1069,7 @@ function parseProxyString(value) {
 }
 
 // Change the index to switch proxies
-const activeProxy = parseProxyString(PROXY_STRINGS[1]);
+const activeProxy = parseProxyString(PROXY_STRINGS[2]);
 
 const { browser, page } = await connect({
     headless: false,
@@ -1069,10 +1169,11 @@ await page.emulateTimezone('Europe/London');
 
       // (Removed) Saving listing HTML.
 // Use Supabase data instead of scanning the page
-      let links = supabaseRows.map(row => ({
+      let links = supabaseRows.map((row) => ({
         href: row.url,
         label: row.name,
-        listingReferer: row.list_event_url // This is the dynamic referer for each link
+        listingReferer: row.list_event_url, // This is the dynamic referer for each link
+        discordChannelId: row.discordChannelId ?? row.discord_channel_id ?? row.category_channel_id ?? null
       }));
       if (links.length === 0) links = await collectEventDetailLinksByPattern(page);
       if (links.length === 0) {
@@ -1101,7 +1202,7 @@ await page.emulateTimezone('Europe/London');
         await eventPage.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1 });
 
         for (let i = 0; i < toVisit.length; i++) {
-          const { href, label } = toVisit[i];
+          const { href, label, discordChannelId } = toVisit[i];
           const idMatch = String(href).match(/\/events\/(\d+)/);
           const eventId = idMatch?.[1] ?? String(i + 1);
 
@@ -1133,6 +1234,7 @@ await page.emulateTimezone('Europe/London');
           if (ticketsHref) {
             let ticketsPage = null;
             let closeTicketsPage = false;
+            let finalTicketsUrl = ticketsHref;
             try {
               // Prefer a real click
               const clickOutcome = await clickGetTicketsAndWait({
@@ -1211,6 +1313,35 @@ await page.emulateTimezone('Europe/London');
               // --- ASSIGN DATA NOW ---
               details.prices = currentEventPrices.length > 0 ? JSON.stringify(currentEventPrices) : 'N/A';
               console.log('Captured price data.');
+
+              try {
+                if (!discordChannelId) {
+                  console.log(`Discord: skipped (missing channelId) for artist: ${label ?? '(unknown)'}`);
+                } else if (!discordRest) {
+                  console.log(`Discord: skipped (missing token) for channel: ${discordChannelId}`);
+                } else {
+                  try {
+                    finalTicketsUrl = String(ticketsPage?.url?.() || ticketsHref || href);
+                  } catch {
+                    finalTicketsUrl = ticketsHref || href;
+                  }
+                  console.log(`Discord: sending -> channel=${discordChannelId} artist=${label ?? '(unknown)'}`);
+                  const sent = await notifyDiscordForEvent({
+                    rest: discordRest,
+                    channelId: discordChannelId,
+                    artistName: label,
+                    details,
+                    ticketUrl: finalTicketsUrl,
+                    prices: currentEventPrices
+                  });
+                  const messageId = String(sent?.id || sent?.message_id || '').trim();
+                  console.log(
+                    `Discord: sent ✅ channel=${discordChannelId}${messageId ? ` messageId=${messageId}` : ''}`
+                  );
+                }
+              } catch (e) {
+                console.log(`Discord send failed (channel ${discordChannelId ?? 'N/A'}): ${String(e?.message || e)}`);
+              }
             } finally {
               if (ticketsPage && closeTicketsPage) {
                 await ticketsPage.close();
@@ -1218,6 +1349,30 @@ await page.emulateTimezone('Europe/London');
             }
           } else {
             console.log('No "Get Tickets" link found on event detail page.');
+
+            try {
+              if (!discordChannelId) {
+                console.log(`Discord: skipped (missing channelId) for artist: ${label ?? '(unknown)'}`);
+              } else if (!discordRest) {
+                console.log(`Discord: skipped (missing token) for channel: ${discordChannelId}`);
+              } else {
+                console.log(`Discord: sending -> channel=${discordChannelId} artist=${label ?? '(unknown)'}`);
+                const sent = await notifyDiscordForEvent({
+                  rest: discordRest,
+                  channelId: discordChannelId,
+                  artistName: label,
+                  details,
+                  ticketUrl: href,
+                  prices: []
+                });
+                const messageId = String(sent?.id || sent?.message_id || '').trim();
+                console.log(
+                  `Discord: sent ✅ channel=${discordChannelId}${messageId ? ` messageId=${messageId}` : ''}`
+                );
+              }
+            } catch (e) {
+              console.log(`Discord send failed (channel ${discordChannelId ?? 'N/A'}): ${String(e?.message || e)}`);
+            }
           }
 
           scraped.push(details);
@@ -1234,13 +1389,7 @@ await page.emulateTimezone('Europe/London');
         await eventPage.close();
       }
 
-      if (exportXlsx) {
-        const jsonPath = path.join(artifactsDir, 'events.json');
-        await fs.writeFile(jsonPath, JSON.stringify(scraped, null, 2), 'utf8');
-        await writeXlsx({ rows: scraped, filePath: xlsxPath });
-        console.log(`Saved events JSON: ${jsonPath}`);
-        console.log(`Saved events XLSX: ${xlsxPath}`);
-      }
+      // Discord notifications are sent per event as they are processed.
     }
 
     if (interactive && keepOpen) {

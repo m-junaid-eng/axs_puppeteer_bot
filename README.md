@@ -1,6 +1,8 @@
 # Puppeteer AXS opener (compliant)
 
-This project opens an AXS URL using Puppeteer, saves HTML/screenshots, and can follow event links to collect event detail pages.
+This project opens AXS URLs using Puppeteer and (optionally) crawls event pages from Supabase.
+
+When running with `--all-events`, it sends a formatted notification to a Discord channel per event.
 
 It does **not** bypass Cloudflare/Turnstile. In `--interactive` mode it pauses so you can solve challenges manually.
 
@@ -9,6 +11,16 @@ It does **not** bypass Cloudflare/Turnstile. In `--interactive` mode it pauses s
 ```bash
 npm install
 ```
+
+## Configure
+
+Create a `.env` file in the project root:
+
+```env
+DISCORD_TOKEN=your_discord_bot_token_here
+```
+
+Discord channel IDs are read from Supabase table `axs_links` using the column `category_channel_id`.
 
 ## Run
 
@@ -48,9 +60,11 @@ npm run open:axs -- --all-events --interactive --post-solve-wait-ms 12000
 
 ## Output
 
-Artifacts are written under `artifacts/`:
+This script sends Discord notifications per event when `--all-events` is enabled.
 
-- `artifacts/axs.html`, `artifacts/axs.png`
-- `artifacts/all-events.html`
-- `artifacts/events/*.html` and `artifacts/events/*.png`
-- `artifacts/events.json` and `artifacts/events.xlsx` (when `--all-events`)
+In the terminal, you should see logs like:
+
+- `Discord: sending -> channel=... artist=...`
+- `Discord: sent ✅ channel=... messageId=...`
+
+If it can’t send, it will log the reason (missing token or missing channelId).

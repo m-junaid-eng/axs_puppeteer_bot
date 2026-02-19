@@ -8,11 +8,12 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.95.1",
+    "discord.js": "^14.22.1",
+    "dotenv": "^16.4.7",
     "proxy-chain": "^2.7.1",
     "puppeteer": "^23.0.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "puppeteer-real-browser": "^1.4.4",
-    "xlsx": "^0.18.5"
+    "puppeteer-real-browser": "^1.4.4"
   }
 }
