@@ -1071,6 +1071,7 @@ async function main() {
 const PROXY_STRINGS = [
   '213.137.80.10:12323:14a50579dbf06:d7e12a129f',
   '91.236.217.28:12323:14a50579dbf06:d7e12a129f',
+  '85.254.80.106:12323:14a98003327fb:874754f1c6',
   '178.92.253.81:12323:14a98003327fb:874754f1c6'
 ];
 
@@ -1086,9 +1087,8 @@ function parseProxyString(value) {
   return { host, port, user, pass };
 }
 
-const chosenProxyString = PROXY_STRINGS[Math.floor(Math.random() * PROXY_STRINGS.length)];
-const activeProxy = parseProxyString(chosenProxyString);
-console.log(`Proxy selected: ${activeProxy.host}:${activeProxy.port}`);
+// Change the index to switch proxies
+const activeProxy = parseProxyString(PROXY_STRINGS[2]);
 
 const { browser, page } = await connect({
     headless: false,
