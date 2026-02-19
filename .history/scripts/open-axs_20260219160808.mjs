@@ -1203,9 +1203,7 @@ await page.emulateTimezone('Europe/London');
               }
 
               if (interactive) {
-                const waitMs = 2000 + Math.floor(Math.random() * 4000);
-                console.log(`Prices loaded. Waiting ${waitMs}ms, then continuing...`);
-                await sleep(waitMs);
+                await promptEnter('Prices loaded. Press Enter to continue... ', { skipIfNoTty: true });
               }
 
               // --- ASSIGN DATA NOW ---

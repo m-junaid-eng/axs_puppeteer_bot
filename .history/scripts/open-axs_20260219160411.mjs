@@ -949,27 +949,15 @@ async function main() {
 
 
 // --- CONFIGURATION: PICK YOUR PROXY ---
-const PROXY_STRINGS = [
-  '213.137.80.10:12323:14a50579dbf06:d7e12a129f',
-  '91.236.217.28:12323:14a50579dbf06:d7e12a129f',
-  '85.254.80.106:12323:14a98003327fb:874754f1c6',
-  '178.92.253.81:12323:14a98003327fb:874754f1c6'
-];
+const PROXY_LIST = {
+    UK_1: { host: '88.216.241.42', port: '8886', user: 'aIlfSV3iCcStWUtl', pass: 'p9l1p8o5KoYt' },
+    UK_2: { host: '156.228.62.15', port: '8886', user: 'aLrgzPPeufcIxgld', pass: 'p7eSqGKpsoDQ' },
+    GER:  { host: '95.135.223.172', port: '8886', user: 'ag6mQAFpBNnn0IlG', pass: 'pK4leqxzEAmQ' },
+    CZE:  { host: '96.62.0.26', port: '8886', user: 'aBqswiN871S8UVow', pass: 'p2juHpD6V6tIi' }
+};
 
-function parseProxyString(value) {
-  const parts = String(value ?? '').trim().split(':');
-  if (parts.length !== 4) {
-    throw new Error(`Invalid proxy format (expected HOST:PORT:USER:PASS): ${value}`);
-  }
-  const [host, port, user, pass] = parts;
-  if (!host || !port || !user || !pass) {
-    throw new Error(`Invalid proxy format (empty field): ${value}`);
-  }
-  return { host, port, user, pass };
-}
-
-// Change the index to switch proxies
-const activeProxy = parseProxyString(PROXY_STRINGS[1]);
+// Change this key to switch countries
+const activeProxy = PROXY_LIST.UK_2; 
 
 const { browser, page } = await connect({
     headless: false,
@@ -1203,9 +1191,7 @@ await page.emulateTimezone('Europe/London');
               }
 
               if (interactive) {
-                const waitMs = 2000 + Math.floor(Math.random() * 4000);
-                console.log(`Prices loaded. Waiting ${waitMs}ms, then continuing...`);
-                await sleep(waitMs);
+                await promptEnter('Prices loaded. Press Enter to continue... ', { skipIfNoTty: true });
               }
 
               // --- ASSIGN DATA NOW ---
