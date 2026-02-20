@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
@@ -64,6 +65,8 @@ function formatPricesForDiscord(prices, { maxLines = 20 } = {}) {
     unique.push({ offerName, label, price, currency });
   }
 
+  if (unique.length === 0) return 'N/A';
+
   const lines = [];
   for (const item of unique.slice(0, maxLines)) {
     const sym = currencyToSymbol(item.currency);
@@ -78,20 +81,65 @@ function formatPricesForDiscord(prices, { maxLines = 20 } = {}) {
   return lines.join('\n\n');
 }
 
-async function sendDiscordMessage({ rest, channelId, content }) {
+function guessImageExtensionFromUrl(url) {
+  const u = String(url || '').split('?')[0].split('#')[0];
+  const lower = u.toLowerCase();
+  if (lower.endsWith('.png')) return '.png';
+  if (lower.endsWith('.webp')) return '.webp';
+  if (lower.endsWith('.gif')) return '.gif';
+  return '.jpg';
+}
+
+async function fetchBinary(url) {
+  const u = String(url || '').trim();
+  if (!u) throw new Error('Missing URL');
+  const res = await fetch(u, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${u}`);
+  const ab = await res.arrayBuffer();
+  return Buffer.from(ab);
+}
+
+async function getOrSaveEventImage({ imagesDir, eventId, imageUrl }) {
+  const url = String(imageUrl || '').trim();
+  if (!url) return null;
+
+  const ext = guessImageExtensionFromUrl(url);
+  const hash = createHash('sha1').update(url).digest('hex').slice(0, 16);
+  const baseName = `img_${hash}${ext}`;
+  const filePath = path.join(imagesDir, baseName);
+
+  if (await fileExists(filePath)) {
+    return { filePath, attachmentName: baseName, sourceUrl: url, fromCache: true };
+  }
+
+  const buf = await fetchBinary(url);
+  await fs.mkdir(imagesDir, { recursive: true });
+  await fs.writeFile(filePath, buf);
+  return { filePath, attachmentName: baseName, sourceUrl: url, fromCache: false };
+}
+
+async function sendDiscordMessage({ rest, channelId, content, embeds, files }) {
   if (!rest) throw new Error('Discord REST client not initialized (missing token).');
   const cid = String(channelId || '').trim();
   if (!cid) throw new Error('Missing Discord channelId.');
+
+  const body = {
+    content,
+    allowed_mentions: { parse: [] }
+  };
+
+  if (Array.isArray(embeds) && embeds.length > 0) {
+    body.embeds = embeds;
+  }
+
   const res = await rest.post(Routes.channelMessages(cid), {
-    body: {
-      content,
-      allowed_mentions: { parse: [] }
-    }
+    body,
+    files: Array.isArray(files) && files.length > 0 ? files : undefined
   });
   return res;
 }
 
-async function notifyDiscordForEvent({ rest, channelId, artistName, details, ticketUrl, prices }) {
+async function notifyDiscordForEvent({ rest, channelId, artistName, details, ticketUrl, prices, image }) {
   const title = normalizeText(artistName || details?.name || '') || 'Tickets are now available!';
   const venue = normalizeText(details?.venue || '');
   const city = normalizeText(details?.city || '');
@@ -114,7 +162,20 @@ async function notifyDiscordForEvent({ rest, channelId, artistName, details, tic
     .filter((x) => x !== null)
     .join('\n');
 
-  const msg = await sendDiscordMessage({ rest, channelId, content });
+  const embeds = [];
+  if (image?.attachmentName) {
+    embeds.push({ thumbnail: { url: `attachment://${image.attachmentName}` } });
+  } else if (image?.sourceUrl) {
+    embeds.push({ thumbnail: { url: String(image.sourceUrl) } });
+  }
+
+  const files = [];
+  if (image?.filePath && image?.attachmentName) {
+    const attachment = await fs.readFile(image.filePath);
+    files.push({ attachment, name: image.attachmentName });
+  }
+
+  const msg = await sendDiscordMessage({ rest, channelId, content, embeds, files });
   return msg;
 }
 
@@ -338,6 +399,7 @@ async function extractEventDetails(page, { fallbackUrl, eventId }) {
     eventId,
     url: fallbackUrl,
     name: '',
+    imageUrl: '',
     startDate: '',
     venue: '',
     address: '',
@@ -353,6 +415,8 @@ async function extractEventDetails(page, { fallbackUrl, eventId }) {
       canonical: document.querySelector('link[rel="canonical"]')?.href ?? '',
       ogTitle: document.querySelector('meta[property="og:title"]')?.content ?? '',
       ogDescription: document.querySelector('meta[property="og:description"]')?.content ?? '',
+      ogImage: document.querySelector('meta[property="og:image"]')?.content ?? '',
+      eventImage: document.querySelector('img[data-testid="EventImage"]')?.getAttribute('src') ?? '',
       jsonLd: []
     };
 
@@ -399,6 +463,10 @@ async function extractEventDetails(page, { fallbackUrl, eventId }) {
     result.startDate = normalizeText(eventNode.startDate || '');
     result.description = normalizeText(eventNode.description || data.ogDescription || '');
 
+    const nodeImage = eventNode.image;
+    const img = Array.isArray(nodeImage) ? nodeImage[0] : nodeImage;
+    result.imageUrl = String(img || data.eventImage || data.ogImage || '').trim();
+
     const loc = eventNode.location;
     const place = Array.isArray(loc) ? loc[0] : loc;
     if (place && typeof place === 'object') {
@@ -414,6 +482,7 @@ async function extractEventDetails(page, { fallbackUrl, eventId }) {
   } else {
     result.name = normalizeText(data.ogTitle || data.title);
     result.description = normalizeText(data.ogDescription || '');
+    result.imageUrl = String(data.eventImage || data.ogImage || '').trim();
   }
 
   return result;
@@ -997,8 +1066,10 @@ async function main() {
   const artifactsDir = path.join(projectRoot, 'artifacts');
   const statePath = path.join(projectRoot, '.state', 'used_uas.json');
   const profilesDir = path.join(projectRoot, '.state', 'profiles');
+  const imagesDir = path.join(projectRoot, '.state', 'event-images');
 
   await cleanupArtifacts(artifactsDir);
+  await fs.mkdir(imagesDir, { recursive: true });
 
   if (followAllEvents) {
     const hasAnyChannel = Array.isArray(supabaseRows)
@@ -1209,6 +1280,21 @@ await page.emulateTimezone('Europe/London');
 
           const details = await extractEventDetails(eventPage, { fallbackUrl: href, eventId });
 
+          let savedImage = null;
+          if (details?.imageUrl) {
+            try {
+              savedImage = await getOrSaveEventImage({ imagesDir, eventId, imageUrl: details.imageUrl });
+              if (savedImage?.fromCache) {
+                console.log(`Event image: cached -> ${savedImage.attachmentName}`);
+              } else if (savedImage) {
+                console.log(`Event image: saved -> ${savedImage.attachmentName}`);
+              }
+            } catch (e) {
+              console.log(`Event image: failed to save (${String(e?.message || e)})`);
+              savedImage = { sourceUrl: details.imageUrl };
+            }
+          }
+
           const ticketsHref = await findGetTicketsHref(eventPage);
           if (ticketsHref) {
             let ticketsPage = null;
@@ -1289,20 +1375,21 @@ await page.emulateTimezone('Europe/London');
                   console.log(`Discord: skipped (missing channelId) for artist: ${label ?? '(unknown)'}`);
                 } else if (!discordRest) {
                   console.log(`Discord: skipped (missing token) for channel: ${discordChannelId}`);
+                } else if (formatPricesForDiscord(currentEventPrices) === 'N/A') {
+                  console.log(
+                    `Discord: skipped (prices N/A) channel=${discordChannelId} artist=${label ?? '(unknown)'}`
+                  );
                 } else {
-                  try {
-                    finalTicketsUrl = String(ticketsPage?.url?.() || ticketsHref || href);
-                  } catch {
-                    finalTicketsUrl = ticketsHref || href;
-                  }
                   console.log(`Discord: sending -> channel=${discordChannelId} artist=${label ?? '(unknown)'}`);
                   const sent = await notifyDiscordForEvent({
                     rest: discordRest,
                     channelId: discordChannelId,
                     artistName: label,
                     details,
-                    ticketUrl: finalTicketsUrl,
-                    prices: currentEventPrices
+                    // Always send the URL from the database (Supabase row.url), not the pricing/seatmap page URL.
+                    ticketUrl: href,
+                    prices: currentEventPrices,
+                    image: savedImage
                   });
                   const messageId = String(sent?.id || sent?.message_id || '').trim();
                   console.log(
@@ -1325,6 +1412,10 @@ await page.emulateTimezone('Europe/London');
                 console.log(`Discord: skipped (missing channelId) for artist: ${label ?? '(unknown)'}`);
               } else if (!discordRest) {
                 console.log(`Discord: skipped (missing token) for channel: ${discordChannelId}`);
+              } else if (formatPricesForDiscord([]) === 'N/A') {
+                console.log(
+                  `Discord: skipped (prices N/A) channel=${discordChannelId} artist=${label ?? '(unknown)'}`
+                );
               } else {
                 console.log(`Discord: sending -> channel=${discordChannelId} artist=${label ?? '(unknown)'}`);
                 const sent = await notifyDiscordForEvent({
@@ -1333,7 +1424,8 @@ await page.emulateTimezone('Europe/London');
                   artistName: label,
                   details,
                   ticketUrl: href,
-                  prices: []
+                  prices: [],
+                  image: savedImage
                 });
                 const messageId = String(sent?.id || sent?.message_id || '').trim();
                 console.log(
