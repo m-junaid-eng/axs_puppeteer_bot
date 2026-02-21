@@ -84,7 +84,7 @@ sudo mkdir -p /opt/axs-bot
 sudo chown -R axs:axs /opt/axs-bot
 
 cd /opt
-git clone <YOUR_REPO_URL> axs-bot
+git clone https://github.com/m-junaid-eng/axs_puppeteer_bot.git axs-bot
 cd /opt/axs-bot
 
 npm install
